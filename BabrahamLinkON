@@ -1,0 +1,592 @@
+#!/usr/bin/perl
+use warnings;
+use strict;
+
+### last modified 25 04 2016
+
+### The sequencing is expected a HiSeq paired-end run, whereby all read 2s are expected to start with one of the following 4 J segments:
+
+# J1 CCCTGTGCCCCAGACATCGAA
+# J2 AGTGGTGCCTTGGCCCCAGTAG
+# J3 ACCAGAGTCCCTTGGCCCCAGTAA
+# J4 TGAGGTTCCTTGACCCCAGTAGTCCATA
+
+my %baits = (
+    J1 => {
+	name => 'J1',
+	sequence => 'CCCTGTGCCCCAGACATCGAA',
+    },
+    J2 => {
+	name => 'J2',
+	sequence => 'AGTGGTGCCTTGGCCCCAGTAG',
+    },
+    J3 => {
+	name => 'J3',
+	sequence => 'ACCAGAGTCCCTTGGCCCCAGTAA',
+    },
+    J4 => {
+	name => 'J4',
+	sequence => 'TGAGGTTCCTTGACCCCAGTAGTCCATA',
+    },
+    );
+
+### We will go through both of the sequence files at the same time, find out which J segment was detected in read 2, and
+### sort the prey-V segments into different genes. Unique mapping and determination of sequence duplication (PCR artefacts)
+### will be done in a later step.
+
+my %mismatches;
+my $count = 0;
+my $barcode_detected = 0;
+my $seq_too_short = 0;
+my $seq_fine = 0;
+my $unique_counter = 0;
+my $downstream_seq_already_existed =0;
+my $true_j2 = 0;
+my $mispriming_replaced = 0;
+
+my $perfect_unrecomb = 0;
+my $mismatch_unrecomb = 0;
+my $different_seq = 0;
+
+my $sequence_in_file_1 = shift @ARGV;
+my $sequence_in_file_2 = shift @ARGV;
+
+die "Please provide two sequence files to be analysed (USAGE:\n\nBabrahamLinkON <V-region file> <J-region bait file>)\n\n" unless ($sequence_in_file_2);
+warn "Processing files '$sequence_in_file_1' (V-region) and '$sequence_in_file_2' (J-region)\n\n"; sleep(1);
+
+$sequence_in_file_1 =~ /(lane.{1}_.+_L00.+_R)/; # data format of our sequencing facility
+my $prepend = $1;
+
+unless (defined $prepend){ # if not defined we use the V-region file name to derive the output filename
+    $prepend = $sequence_in_file_1;
+    $prepend =~ s/(\.fq|\.fastq|\.fastq\.gz|\.fq\.gz)$//g;
+}
+
+my $report_file = $prepend.'.sorting_report.txt';
+open (REPORT,'>',$report_file) or die $!;
+warn "Writing report to $report_file\n\n";
+
+my $temp_outfile_read2 = $prepend.'.temp_read2.fq';
+
+warn "Now pre-processing bait file for J2-J4 mispriming...\n====================================================\n\n";
+
+pre_process_bait_file_for_J2_mispriming($sequence_in_file_2);
+
+
+# reassigning in file 2
+$sequence_in_file_2 = $temp_outfile_read2;
+
+my $results;
+my @bait=();
+my %uniques;
+my %recomb;
+
+sleep (1);
+
+foreach my $bait (sort keys %baits){
+
+  # resetting parameters
+  ($count,$barcode_detected,$seq_too_short,$seq_fine,$downstream_seq_already_existed,$unique_counter,$mispriming_replaced) = (0,0,0,0,0,0,0);
+  $results = '';
+  @bait = ();
+  %uniques = ();
+
+  @bait = split (//,$baits{$bait}->{sequence});
+  print "Barcode sequence $baits{$bait}->{name}:\t";
+  print join ("",@bait)," (",scalar@bait," bp)\n";
+  
+  $results = create_filehandles($baits{$bait}->{name});
+
+  read_files ($baits{$bait}->{name});
+  # print_results ();
+  # print_J_segment_recombined_downstream_sequence_frequencies();
+
+  warn "Total number of sequences processed: $count\n";
+  print REPORT "Total number of sequences processed: $count\n";
+
+  warn "The correct barcode ",@bait," for J-gene $baits{$bait}->{name} was detected in $barcode_detected cases\n";
+  print REPORT"The correct barcode ",@bait," for J-gene $baits{$bait}->{name} was detected in $barcode_detected cases\n";
+
+  my $percentage;
+  if ($barcode_detected == 0){
+    $percentage = 'N/A';
+  }
+  else{
+    $percentage = sprintf("%.2f",100*$seq_fine/$barcode_detected);
+  }
+
+  warn "Sequence downstream of the bait extracted (60bp or longer): $seq_fine ($percentage%)\n";
+  print REPORT "Sequence downstream of the bait extracted (60bp or longer): $seq_fine ($percentage%)\n";
+
+  warn "Sequence downstream of the bait was shorter than 60bp: $seq_too_short\n\n";
+  print REPORT "Sequence downstream of the bait was shorter than 60bp: $seq_too_short\n\n";
+
+  my $dupl;
+  if ($seq_fine){
+    $dupl =  sprintf("%.2f",100*$downstream_seq_already_existed/$seq_fine);
+  }
+  else{
+    $dupl = 'N/A';
+  }
+
+  #  warn "Perfect unrecombined matches: $perfect_unrecomb\n";
+  #  warn "Unrecombined with up to 5 mismatches: $mismatch_unrecomb\n";
+  #  warn "Some other sequence: $different_seq\n\n";
+  #  foreach my $count(sort {$a<=>$b} keys %mismatches){
+  #   print "$count\t$mismatches{$count}\n";
+  # }
+  #  warn "Total number of $baits{$bait}->{name} baits shared the same sequence after the J-region (possibly PCR duplicates): $downstream_seq_already_existed ($dupl%)\n";
+  #  print REPORT "Total number of $baits{$bait}->{name} baits shared the same sequence after the J-region (possibly PCR duplicates): $downstream_seq_already_existed ($dupl%)\n";
+  #  warn "Total number of unique $baits{$bait}->{name} baits printed: $unique_counter\n\n";
+  #  print REPORT "Total number of unique $baits{$bait}->{name} baits printed: $unique_counter\n\n";
+
+}
+
+if (unlink ($temp_outfile_read2)){
+  warn "\n\nAll done. Successfully deleted temporary Read 2 file $temp_outfile_read2\n\n";
+}
+else{
+  warn "Finished analysis but failed to delete temp file '$temp_outfile_read2': $!\n\n";
+}
+
+
+sub print_J_segment_recombined_downstream_sequence_frequencies{
+    
+    print "number of different sequences in total: ";
+    print scalar keys %recomb,"\n\n";
+    my $count = 0;
+    foreach my $seq (sort {scalar@{$recomb{$b}} <=> scalar@{$recomb{$a}}} keys %recomb){
+	last if ($count == 5);
+	open (OUT,'>',"$seq.txt") or die $!;
+	warn "created output file $seq.txt\n";
+	
+	# warn "$seq\t$recomb{$seq}\n";
+	# print "$seq\t",scalar @{$recomb{$seq}},"\t$recomb{$seq}[0]\n";
+	
+	foreach my $index(0..$#{$recomb{$seq}}){
+	    my $line = $recomb{$seq}[$index];
+	    #  warn "$line\n\n";
+	    $line =~ s/{/\n/g;
+	    print OUT "$line\n";
+	}
+	$count++;
+    }
+}
+
+
+sub print_J_segment_downstream_sequence_frequencies{
+  my $count = 0;
+  foreach my $seq (sort {$uniques{$b} <=> $uniques{$a}} keys %uniques){
+    last if ($count == 100);
+    # warn "$seq\t$uniques{$seq}\n";
+    #  print PCR "$seq\t$uniques{$seq}\n";
+    $count++;
+  }
+}
+
+
+
+sub create_filehandles {
+  my $bait_name = shift;
+  my %filehandles;
+
+  my $outfile_1 = "${prepend}.${bait_name}.bait_side.txt";
+  my $outfile_2 = "${prepend}.${bait_name}.prey_side.txt";
+
+  open ($filehandles{isbait},'>',$outfile_1) or die $!;
+  warn "Writing bait-side output to $outfile_1\n";
+  open ($filehandles{validotherends},'>',$outfile_2) or die $!;
+  warn "Writing prey-side output to $outfile_2\n";
+
+  return \%filehandles;
+}
+
+
+sub read_files {
+
+  my $bait_name = shift;
+
+  my ($SEQ1,$SEQ2);
+  if ($sequence_in_file_1 =~ /\.gz$/){
+    open ($SEQ1,"zcat $sequence_in_file_1 |") or die "Can't read seq1: $!";
+  }
+  else{
+    open ($SEQ1,$sequence_in_file_1) or die "Can't read seq1: $!";
+  }
+
+  if ($sequence_in_file_2 =~ /\.gz$/){
+    open ($SEQ2,"zcat $sequence_in_file_2 |") or die "Can't read seq2: $!";
+  }
+  else{
+    open ($SEQ2,$sequence_in_file_2) or die "Can't read seq2: $!";
+  }
+
+  while (1) {
+
+    my $seqpair = read_next_sequence_pair($SEQ1,$SEQ2);
+
+    last unless ($seqpair);
+
+    # last if ($count == 100000);
+
+    ++$count;
+    if ($count % 1000000 == 0) {
+      warn "Processed $count sequences\n";
+    }
+    process_sequence($bait_name,$seqpair);
+  }
+
+}
+
+sub read_next_sequence_pair {
+
+  my ($fh1,$fh2) = @_;
+
+  my @seqpair;
+
+  push @seqpair,read_next_sequence($fh1);
+  push @seqpair,read_next_sequence($fh2);
+
+  return undef unless ($seqpair[0] and $seqpair[1]);
+
+  return \@seqpair;
+
+}
+
+sub read_next_sequence {
+
+  my ($fh) = @_;
+
+  my $seq;
+
+  # First line is the id
+  my $id_line = <$fh>;
+
+  return undef unless ($id_line);
+
+  chomp $id_line;
+
+  if ($id_line =~ /^\@(.+)$/) {
+    $seq->{id} = $1;
+  }
+  else {
+    die "Couldn't extract an id from '$id_line'";
+  }
+
+  # Next line is the actual sequence
+  $seq->{seq} = <$fh>;
+  chomp $seq->{seq};
+
+  # next line is like first line just with a + in the start
+  $_ = <$fh>;
+
+  # Finally we get the quality string
+  $seq->{qual} = <$fh>;
+  chomp $seq->{qual};
+
+  return $seq;
+
+}
+
+
+sub process_sequence {
+  my $bait_name = shift;
+  my ($seqpair) = @_;
+
+  # Seqpair is an array of two sequences which each have
+  # an id (the shortened one), seq and qual value (none of the lines contain a '\n')
+
+  # the J-bait segments are always in the second run
+  if (is_bait($seqpair->[1])) {
+
+      ### if a barcode is detected (these criteria can be adjusted) we increase the barcode count
+      ++$barcode_detected;
+      
+      my ($downstream_seq,$downstream_qual);
+      ($downstream_seq,$downstream_qual) = process_bait_end($seqpair);
+
+      if ($downstream_seq eq 0){
+	  ++$seq_too_short;
+      }
+      else{
+	  ++$seq_fine;
+	  
+	  print {$results->{isbait}} '@',$seqpair->[1]->{id},"\n";
+	  print {$results->{isbait}} "$downstream_seq\n";
+	  print {$results->{isbait}} '+',$seqpair->[1]->{id},"\n";
+	  print {$results->{isbait}} "$downstream_qual\n";
+	  
+	  # This prints out the full sequence of the sequence_1 file in FastQ format
+	  print {$results->{validotherends}} '@',$seqpair->[0]->{id},"\n";
+	  print {$results->{validotherends}} $seqpair->[0]->{seq},"\n";
+	  print {$results->{validotherends}} '+',$seqpair->[0]->{id},"\n";
+	  print {$results->{validotherends}} $seqpair->[0]->{qual},"\n";
+      }
+  }
+}
+
+
+sub is_unrecombined {
+    my ($seq) = @_;
+    my $unrecomb = 'GCATAGTAATCACAATAGTGGATTTTTCCT';
+    #  print "$seq\n$unrecomb\n";
+    # sleep (1);
+    
+    my @seq = split(//,$seq);
+    my @unrecomb = split(//,$unrecomb);
+    # print "seq: $seq->{seq}\n";
+    # print "bait:";
+    # print  join ('',@bait),"\n\n";
+    
+    my $n_count = 0;
+    my $match_count = 0;
+    my $mismatch_count = 0;
+    
+    for my $index (0..$#unrecomb){
+	
+	#   last if ($quality[$index] eq '#'); # Quality is rubbish
+	
+	if ($seq[$index] eq 'N') {
+	    ++$n_count;
+	}
+	elsif ($seq[$index] eq $unrecomb[$index]) {
+	    ++$match_count;
+	}
+	else {
+      ++$mismatch_count;
+	}
+    }
+    
+    $mismatches{$mismatch_count}++;
+    
+    # warn "match count: $match_count\nN count: $n_count\nmismatch count: $mismatch_count\n";
+    # some element of the sequence is rubbish
+    if ($match_count == 30){
+	# warn "perfect match!\n";
+	$perfect_unrecomb++;
+	return 0;
+    }
+    if ($mismatch_count >= 1 and $mismatch_count <= 5 ) {
+	#warn "Number of mismatches: $mismatch_count\n";
+	$mismatch_unrecomb++;
+	return 0;
+    }
+    else{
+	$different_seq++;
+	return 1;
+    }
+}
+
+
+sub is_bait {
+
+    my ($seq) = @_;
+
+    my @seq = split(//,$seq->{seq});
+    my @quality = split(//,$seq->{qual});
+    # print "seq: $seq->{seq}\n";
+    # print "bait:";
+    # print  join ('',@bait),"\n\n";
+    
+    my $n_count = 0;
+    my $match_count = 0;
+    my $mismatch_count = 0;
+    
+    for my $index (0..$#bait) {
+	
+	last if ($index > $#seq);
+	
+	last if ($quality[$index] eq '#'); # Quality is rubbish
+	
+	if ($seq[$index] eq 'N') {
+	    ++$n_count;
+	}
+	elsif ($seq[$index] eq $bait[$index]) {
+	    ++$match_count;
+	}
+	else {
+	    ++$mismatch_count;
+	}
+    }
+    
+    # warn "match count: $match_count\nN count: $n_count\nmismatch count: $mismatch_count\n";
+    
+    # some element of the sequence is rubbish
+    if ($match_count < scalar @bait or $n_count > 2 or $mismatch_count > 1) {
+	return 0;
+    }
+    else{
+	return 1;
+    }
+}
+
+sub process_bait_end {
+    
+    my ($seqpair) = @_;
+
+    # Extracting the sequence after the J-segment barcode
+    my $downstream_sequence;
+    my $downstream_quality;
+    if ( (length($seqpair->[1]->{seq})-scalar @bait) >= 60) {
+	# warn "Sequence is longer than 60bp\n";
+
+	$downstream_sequence = substr($seqpair->[1]->{seq},scalar @bait,60);
+	$downstream_quality = substr($seqpair->[1]->{qual},scalar @bait,60);
+	# warn "$downstream_sequence\n";
+	# warn "$downstream_quality\n";
+	# sleep(1);
+	
+	return ($downstream_sequence,$downstream_quality);
+    }
+    else{
+	# warn "Sequence too short: $seqpair->[1]->{seq}\n";
+    return 0;
+    }
+}
+
+
+sub pre_process_bait_file_for_J2_mispriming {
+    
+    ### this subroutine will look for J2 sequence at the start of read 2 reads, and then analyse the following 6bp to see if the sequence is a genuine J2 sequence
+    ### or a potential J4 mis-priming event (in which case the extended sequence would be followed by the sequence TCCATA. If we find the J2 sequence to really be a
+    ### J4 mispriming event we simply replace the bait sequence in the file and write this out to a temporary Read 2 file that is then processed normally. The temp
+    ### file will be deleted again once the analysis has finished
+    
+    my $infile = shift;
+
+    if ($infile =~ /gz$/){
+	open (MISPRIMING,"zcat $infile |") or die "Couldn't read from gzipped file '$infile'\n";
+    }
+    else{
+	open (MISPRIMING,$infile) or die "Couldn't read from file '$infile'\n";
+    }
+    
+    open (TEMP_OUT,'>',$temp_outfile_read2) or die "Can't write to file '$temp_outfile_read2': $!\n";
+    
+    my $total = 0;
+    my $this_is_j2 = 0;
+    my $j_too_short= 0;
+    
+    ### looking for J2 bait
+    my $j2_sequence = 'AGTGGTGCCTTGGCCCCAGTAG';
+    
+    while (1){
+      
+	my $id    = <MISPRIMING>;
+	my $seq   = <MISPRIMING>;
+	my $three = <MISPRIMING>;
+	my $qual  = <MISPRIMING>;
+	
+	last unless ($qual);
+	$total++;
+	
+	if ($total%2500000 == 0 ){
+	    warn "Processed $total sequences so far...\n";
+	}
+
+	chomp ($seq);
+	
+	if ($seq =~ /^$j2_sequence/){
+	    
+	    ++$this_is_j2;
+	    
+	    if ( ( length($seq) - length($j2_sequence) - 6) >= 6 ) {
+		
+		my $extended_seq = substr($seq,length$j2_sequence,6);
+		
+		### This is most likely misprimed J4 sequence
+
+		# this is the J4 bait sequence
+		# TGAGGTTCCTTGACCCCAGTAG TCCATA     # extended sequence would be GCAT
+		
+		if ($extended_seq eq "TCCATA"){
+		    # warn "$extended_seq\tJ4 mispriming!\n";
+		    # sleep(1);
+		    ++$mispriming_replaced;
+		    
+		    my $replacement_seq = $seq;
+		    # replacing the J2 with the J4 bait sequence. Note that TCCATA is part of the J4 bait we are looking for
+		    substr ($replacement_seq,0,length($j2_sequence),'TGAGGTTCCTTGACCCCAGTAG');
+		    # warn "original J2:\t$seq\nreplaced J4:\t$replacement_seq\n\n"; sleep(1);
+		    
+		    ###printing out the replaced J4 sequence
+		    
+		    print TEMP_OUT $id;
+		    print TEMP_OUT "$replacement_seq\n";
+		    print TEMP_OUT $three;
+		    print TEMP_OUT $qual;
+		    
+		}
+		else{ ### anything else will be scored as a true J2 bait and left unchanged
+		    ++$true_j2;
+		    
+		    print TEMP_OUT $id;
+		    print TEMP_OUT "$seq\n";
+		    print TEMP_OUT $three;
+		    print TEMP_OUT $qual;
+		    
+		}
+	    }
+	    else{
+		### writing it out anyway, these sequences will be kicked later on because the downstream sequence is not long enough
+		++$j_too_short;
+		print TEMP_OUT $id;
+		print TEMP_OUT "$seq\n";
+		print TEMP_OUT $three;
+		print TEMP_OUT $qual;
+	    }
+	}
+	else{ ### anything else is not J2 sequenceand will just be printed out again
+	    print TEMP_OUT $id;
+	    print TEMP_OUT "$seq\n";
+	    print TEMP_OUT $three;
+	    print TEMP_OUT $qual;
+	}
+    }
+    
+    my $percent_mispriming = sprintf ("%.1f",$mispriming_replaced/$this_is_j2*100);
+    
+    warn "\nFinished pre-processing the bait file (Read 2)\n";
+    warn "==============================================\n";
+    warn "Total number of sequences analysed: $total\n";
+    warn "Sequences recognised as J2 total (perfect match required): $this_is_j2\n";
+    warn "Cases detected as J2-J4 mispriming: $mispriming_replaced ($percent_mispriming%)\n";
+    warn "Probably true J2 baits: $true_j2\n";
+    warn "Sequence after J2 bait was too short to determine context: $j_too_short\n\n";
+    
+    print REPORT "Summary of J2 -> J4 mis-priming (Read 2)\n";
+    print REPORT "========================================\n";
+    print REPORT "Total number of sequences analysed: $total\n";
+    print REPORT "Sequences recognised as J2 total (perfect match required): $this_is_j2\n";
+    print REPORT "Cases detected as J2-J4 mispriming: $mispriming_replaced ($percent_mispriming%)\n";
+    print REPORT "Probably true J2 baits: $true_j2\n";
+    print REPORT "Sequence after J2 bait was too short to determine context: $j_too_short\n\n";
+ 
+    sleep(1);
+    
+    close TEMP_OUT or die "Failed to close read2 temp file\n";
+    
+}
+
+
+
+sub print_results{
+    
+    warn "Printing results\n\n";
+    
+    foreach my $seq (keys %uniques){
+	# if the bait was detected we will print out all bait and prey side
+	++$unique_counter;
+	
+	print {$results->{isbait}} '@',${$uniques{$seq}}[1]->{id}  ,"\n";
+	print {$results->{isbait}}     ${$uniques{$seq}}[1]->{seq} ,"\n";
+	print {$results->{isbait}} '+',${$uniques{$seq}}[1]->{id}  ,"\n";
+	print {$results->{isbait}}     ${$uniques{$seq}}[1]->{qual},"\n";
+	
+	print {$results->{validotherends}} '@',${$uniques{$seq}}[0]->{id} ,"\n";
+	print {$results->{validotherends}}     ${$uniques{$seq}}[0]->{seq}  ,"\n";
+	print {$results->{validotherends}} '+',${$uniques{$seq}}[0]->{id}   ,"\n";
+	print {$results->{validotherends}}     ${$uniques{$seq}}[0]->{qual} ,"\n";
+    }
+    
+}
