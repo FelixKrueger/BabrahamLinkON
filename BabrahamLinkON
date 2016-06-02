@@ -544,8 +544,15 @@ sub pre_process_bait_file_for_J2_mispriming {
 	}
     }
     
-    my $percent_mispriming = sprintf ("%.1f",$mispriming_replaced/$this_is_j2*100);
+    my $percent_mispriming;
+    if ($this_is_j2 == 0){
+	$percent_mispriming = 'N/A';
+    }
+    else{
+	$percent_mispriming = sprintf ("%.1f",$mispriming_replaced/$this_is_j2*100);
+    }
     
+
     warn "\nFinished pre-processing the bait file (Read 2)\n";
     warn "==============================================\n";
     warn "Total number of sequences analysed: $total\n";
