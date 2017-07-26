@@ -7,23 +7,16 @@ use Getopt::Long;
 
 ### The sequencing run was a MiSeq paired-end run, whereby all read 2s are expected to start with one of the following 4 J segments:
 
-# Update Sept 16: We are going to use slightly longer baits this time to reduce mis-priming events. Here are the new bait sequences. We will need to allow a bit of leeway this time when looking for the bait 
+# In the latest version of VkJk-Seq, the V-reads (Read 1) contains 6 random nucleotides (6N) at the start as a unique molecular barcode, followed by either GACTCGT VVVVVVVV,
+# or CTGCTCCT VVVVVV. Two primers were used so that the sequence is a bit different and we don't run into problems on the sequencer if one cycle is the same base 
+# (i.e. the last T is needed for priming to A-tailed products, but they are 1bp apart. We are going to use bases 16-the end of Read 1 to map to V-region 
+# (6N + 7 or 8 bp of constant sequence + T for the A-tail)
 
-# Update Oct 28: In the latest version of VkJk-Seq, Louise has incorporated 6 Ns at the start of read 1 as barcode, followed by either GACTCGT VVVVVVVV, or CTGCTCCT VVVVVV. She used two
-# primers so that the sequence is a bit different and we don't run into problems on the sequencer if one cycle is the same base (i.e. the last T is needed for priming to A-tailed products,
-# they are 1bp apart. We are going to use bases 16-116 (100bp) from read 1 to map to V-region (6N + 7 or 8bp of adapter sequence), and somewhat shortened so that we don't read into the 
-# junction
-
-# For deduplication we are going to use:
-# - 20bp after the bait, i.e. junction
-# - also first 7 (or up to 13bp) of read 1
+# For the deduplication we are going to use:
+# 20 bp after the bait, i.e. junction
+# also first 7 bp of read 1
 # - also start position of V fragment
 
-
-# Jk1 TTTGATTTCCAGCTTGGTGCCTCCACCGAA
-# Jk2 TTTATTTCCAGCTTGGTCCCCCCTCCGAAC
-# Jk4 CGTTTTATTTCCAACTTTGTCCCCGAGCCGAA
-# Jk5 CAGCTCCAGCTTGGTCCCAGCACCGAA
 
 ### We will go through both of the sequence files at the same time, find out which J segment was detected in read 2, and
 ### sort the prey-V segments into different genes. Unique mapping, ambiguous mapping or determination of sequence duplication (PCR artefacts) and so on will be done in a later step.
@@ -31,9 +24,11 @@ my $vkjk_version = 'v1.0';
 
 my $help;
 my $version;
+my $not_truncated;
 
-my $command_line = GetOptions ('help'                => \$help,
-                               'version'             => \$version,
+my $command_line = GetOptions ('help'               => \$help,
+			       'version'            => \$version,
+			       'not_truncated'      => \$not_truncated 
     );
 
 ### EXIT ON ERROR if there were errors with any of the supplied options
@@ -51,29 +46,38 @@ if ($version){
     print_version();
 }
 
+my ($jk_seq1,$jk_seq2,$jk_seq4,$jk_seq5);
 
+if ($not_truncated){
+    $jk_seq1 = 'TTTGATTTCCAGCTTGGTGCCTCCACCGAA';    # this is the full length J-bait
+    $jk_seq2 = 'TTTATTTCCAGCTTGGTCCCCCCTCCGAAC';
+    $jk_seq4 = 'CGTTTTATTTCCAACTTTGTCCCCGAGCCGAA';
+    $jk_seq5 = 'CAGCTCCAGCTTGGTCCCAGCACCGAA';
+}
+else{ # default
+    $jk_seq1 = 'ATTTCCAGCTTGGTGCCTCCACCGAA';        # this is a J-bait shortened by 4 bp to account for poor qualities of Read 2
+    $jk_seq2 = 'TTTCCAGCTTGGTCCCCCCTCCGAAC';
+    $jk_seq4 = 'TTATTTCCAACTTTGTCCCCGAGCCGAA';
+    $jk_seq5 = 'TCCAGCTTGGTCCCAGCACCGAA';
+}
 my %baits = (
-	     J1 => {
- 		    name => 'Jk1',
-		    #sequence => 'TTTGATTTCCAGCTTGGTGCCTCCACCGAA',
-		    sequence => 'ATTTCCAGCTTGGTGCCTCCACCGAA', # this time we had to shorten the reads by 4bp on the 5' end due to poor sequence quality
-		   },
- 	     J2 => {
- 		    name => 'Jk2',
- 		    # sequence => 'TTTATTTCCAGCTTGGTCCCCCCTCCGAAC',
-		    sequence => 'TTTCCAGCTTGGTCCCCCCTCCGAAC', # this time we had to shorten the reads by 4bp on the 5' end due to poor sequence quality
- 		   },
- 	     J3 => {
- 	     	    name => 'Jk4',
- 		    # sequence => 'CGTTTTATTTCCAACTTTGTCCCCGAGCCGAA',
- 		    sequence => 'TTATTTCCAACTTTGTCCCCGAGCCGAA', # this time we had to shorten the reads by 4bp on the 5' end due to poor sequence quality
- 		   },
-	     J4 => {
-	     	    name => 'Jk5',
-		    # sequence => 'CAGCTCCAGCTTGGTCCCAGCACCGAA',
-		    sequence => 'TCCAGCTTGGTCCCAGCACCGAA', # this time we had to shorten the reads by 4bp on the 5' end due to poor sequence quality
-		   }
-	    );
+    J1 => {
+	name => 'Jk1',
+	sequence => "$jk_seq1",
+    },
+    J2 => {
+	name => 'Jk2',
+	sequence => "$jk_seq2",
+    },
+    J3 => {
+	name => 'Jk4',
+	sequence => "$jk_seq4",
+    },
+    J4 => {
+	name => 'Jk5',
+	sequence => "$jk_seq5"
+    },
+    );
 
 my %mismatches;
 my $count = 0;
@@ -96,13 +100,9 @@ my $sequence_in_file_2 = shift @ARGV;
 die "Please provide two sequence files to be analysed (or --help for more information)\n\nUSAGE:   BabrahamLinkON_VkJk-Seq <V-region file> <J-region bait file>\n\n" unless ($sequence_in_file_2);
 warn "Processing files '$sequence_in_file_1' and '$sequence_in_file_1'\n\n";
 
-$sequence_in_file_1 =~ /lane.{1}_(.+)_L00.+_R/;
-my $file_barcode = $1;
-warn "Using the following file barcode: $file_barcode\n";
-
-$sequence_in_file_2 =~ /(lane.{1}_.+_L00.+_R)/;
-my $prepend = $1;
-warn "$prepend\n\n";
+my $prepend = $sequence_in_file_1; 
+$prepend =~ s/(\.fastq\.gz$|\.fq.gz$|\.fq$|\.fastq)//; # using this string to construct output files.
+# warn "$prepend\n\n";
 
 my $total_number_of_sequences = 0;
 my $total_number_of_bait_matches = 0;
@@ -116,10 +116,6 @@ my $report_file = $prepend.'.sorting_report.txt';
 open (REPORT,'>',$report_file) or die $!;
 warn "Writing report to $report_file\n\n";
 
-my $pcr_file = $prepend.'.potential_PCR_products.txt';
-# open (PCR,'>',$pcr_file) or die $!;
-
-sleep (3);
 
 foreach my $bait (sort keys %baits){
 
@@ -128,11 +124,10 @@ foreach my $bait (sort keys %baits){
   $results = '';
   @bait = ();
   %uniques = ();
-
+  
   @bait = split (//,$baits{$bait}->{sequence});
   warn "length of barcode sequence in $baits{$bait}->{name} is ",scalar@bait," bp\n";
-  # print PCR "$baits{$bait}->{name}\n";
-
+  
   warn join ("",@bait),"\n";
 
   $results = create_filehandles($baits{$bait}->{name});
@@ -140,7 +135,7 @@ foreach my $bait (sort keys %baits){
   read_files ();
   # print_results ();
   # print_J_segment_recombined_downstream_sequence_frequencies();
-
+  
   warn "Total number of sequences processed: $count\n";
   print REPORT "Total number of sequences processed: $count\n";
 
@@ -161,20 +156,20 @@ foreach my $bait (sort keys %baits){
     $percentage = sprintf("%.2f",100*$seq_fine/$barcode_detected);
   }
 
-  warn "Sequence downstream of the bait extracted (20bp or longer): $seq_fine ($percentage%)\n";
-  print REPORT "Sequence downstream of the bait extracted (20bp or longer): $seq_fine ($percentage%)\n";
+  warn "Sequence downstream of the bait extracted (20 bp or longer): $seq_fine ($percentage%)\n";
+  print REPORT "Sequence downstream of the bait extracted (20 bp or longer): $seq_fine ($percentage%)\n";
 
-  warn "Sequence downstream of the bait was shorter than 20bp: $seq_too_short\n\n";
-  print REPORT "Sequence downstream of the bait was shorter than 20bp: $seq_too_short\n\n";
+  warn "Sequence downstream of the bait was shorter than 20 bp: $seq_too_short\n\n";
+  print REPORT "Sequence downstream of the bait was shorter than 20 bp: $seq_too_short\n\n";
 
   warn "Read 1 known sequence 1 (GACTCGT): $known_1\n";
   warn "Read 1 known sequence 2 (CTGCTCCT): $known_2\n";
-  warn "Read 1 poor tag sequence: $bad_tag\n";
+  warn "Read 1 unidentifyable tag sequence: $bad_tag\n";
   print REPORT "Read 1 known sequence 1 (GACTCGT): $known_1\n"; 
   print REPORT "Read 1 known sequence 2 (CTGCTCCT): $known_2\n"; 
-  print REPORT "Read 1 poor tag sequence: $bad_tag\n";
-  warn "V side sequence was shorter than 100bp: $v_seq_too_short\n\n";
-  print REPORT "V side sequence was shorter than 100bp: $v_seq_too_short\n\n";  
+  print REPORT "Read 1 unidentifyable tag sequence: $bad_tag\n";
+  # warn "V side sequence was shorter than 85 bp: $v_seq_too_short\n\n";  # in the current form we extract any length of V-sequence and let the mapping sort out the rest
+  # print REPORT "V side sequence was shorter than 85 bp: $v_seq_too_short\n\n";  
 
 
   my $dupl;
@@ -205,427 +200,433 @@ warn "Total number of sequences had a bait match:  $total_number_of_bait_matches
 
 sub print_J_segment_recombined_downstream_sequence_frequencies{
 
-  print"number of different sequences in total: ";
-  print scalar keys %recomb,"\n\n";
-  my $count = 0;
-  foreach my $seq (sort {scalar@{$recomb{$b}} <=> scalar@{$recomb{$a}}} keys %recomb){
-    last if ($count == 5);
-    open (OUT,'>',"$seq.txt") or die $!;
-    warn "created output file $seq.txt\n";
+    print"number of different sequences in total: ";
+    print scalar keys %recomb,"\n\n";
+    my $count = 0;
+    foreach my $seq (sort {scalar@{$recomb{$b}} <=> scalar@{$recomb{$a}}} keys %recomb){
+	last if ($count == 5);
+	open (OUT,'>',"$seq.txt") or die $!;
+	warn "created output file $seq.txt\n";
 
-    # warn "$seq\t$recomb{$seq}\n";
-    # print "$seq\t",scalar @{$recomb{$seq}},"\t$recomb{$seq}[0]\n";
+	# warn "$seq\t$recomb{$seq}\n";
+	# print "$seq\t",scalar @{$recomb{$seq}},"\t$recomb{$seq}[0]\n";
 
-    foreach my $index(0..$#{$recomb{$seq}}){
-      my $line = $recomb{$seq}[$index];
-      #  warn "$line\n\n";
-      $line =~ s/{/\n/g;
-      print OUT "$line\n";
+	foreach my $index(0..$#{$recomb{$seq}}){
+	    my $line = $recomb{$seq}[$index];
+	    #  warn "$line\n\n";
+	    $line =~ s/{/\n/g;
+	    print OUT "$line\n";
+	}
+
+	$count++;
     }
-
-    $count++;
-  }
 }
 
 
 sub print_J_segment_downstream_sequence_frequencies{
-  my $count = 0;
-  foreach my $seq (sort {$uniques{$b} <=> $uniques{$a}} keys %uniques){
-    last if ($count == 100);
-    # warn "$seq\t$uniques{$seq}\n";
-    # print PCR "$seq\t$uniques{$seq}\n";
-    $count++;
-  }
+    my $count = 0;
+    foreach my $seq (sort {$uniques{$b} <=> $uniques{$a}} keys %uniques){
+	last if ($count == 100);
+	# warn "$seq\t$uniques{$seq}\n";
+	# print PCR "$seq\t$uniques{$seq}\n";
+	$count++;
+    }
 }
 
 
 
 sub create_filehandles {
-  my $bait_name = shift;
-  my %filehandles;
+    my $bait_name = shift;
+    my %filehandles;
 
-  my $outfile_1 = "${prepend}.${bait_name}.bait_side.txt";
-  my $outfile_2 = "${prepend}.${bait_name}.prey_side.txt";
-
-  open ($filehandles{isbait},'>',$outfile_1) or die $!;
-  warn "Writing bait-side output to $outfile_1\n";
-  open ($filehandles{validotherends},'>',$outfile_2) or die $!;
-  warn "Writing prey-side output to $outfile_2\n";
-
-  return \%filehandles;
+    my $outfile_1 = "${prepend}.${bait_name}.bait_side.txt";
+    my $outfile_2 = "${prepend}.${bait_name}.prey_side.txt";
+    
+    open ($filehandles{isbait},'>',$outfile_1) or die $!;
+    warn "Writing bait-side output to $outfile_1\n";
+    open ($filehandles{validotherends},'>',$outfile_2) or die $!;
+    warn "Writing prey-side output to $outfile_2\n";
+    
+    return \%filehandles;
 }
 
 
 sub read_files {
-  my ($SEQ1,$SEQ2);
-  if ($sequence_in_file_1 =~ /\.gz$/){
-    open ($SEQ1,"zcat $sequence_in_file_1 |") or die "Can't read seq1: $!";
-  }
-  else{
-    open ($SEQ1,$sequence_in_file_1) or die "Can't read seq1: $!";
-  }
-
-  if ($sequence_in_file_2 =~ /\.gz$/){
-    open ($SEQ2,"zcat $sequence_in_file_2 |") or die "Can't read seq2: $!";
-  }
-  else{
-    open ($SEQ2,$sequence_in_file_2) or die "Can't read seq2: $!";
-  }
-
-  while (1) {
-
-    my $seqpair = read_next_sequence_pair($SEQ1,$SEQ2);
-
-    last unless ($seqpair);
-
-    # last if ($count == 100000);
-
-    ++$count;
-    if ($count % 1000000 == 0) {
-      warn "Processed $count sequences\n";
+    my ($SEQ1,$SEQ2);
+    if ($sequence_in_file_1 =~ /\.gz$/){
+	open ($SEQ1,"zcat $sequence_in_file_1 |") or die "Can't read seq1: $!";
     }
-    process_sequence($seqpair);
-  }
+    else{
+	open ($SEQ1,$sequence_in_file_1) or die "Can't read seq1: $!";
+    }
+
+    if ($sequence_in_file_2 =~ /\.gz$/){
+	open ($SEQ2,"zcat $sequence_in_file_2 |") or die "Can't read seq2: $!";
+    }
+    else{
+	open ($SEQ2,$sequence_in_file_2) or die "Can't read seq2: $!";
+    }
+
+    while (1) {
+
+	my $seqpair = read_next_sequence_pair($SEQ1,$SEQ2);
+
+	last unless ($seqpair);
+
+	# last if ($count == 100000);
+
+	++$count;
+	if ($count % 1000000 == 0) {
+	    warn "Processed $count sequences\n";
+	}
+	process_sequence($seqpair);
+    }
 
 }
 
 sub read_next_sequence_pair {
 
-  my ($fh1,$fh2) = @_;
+    my ($fh1,$fh2) = @_;
 
-  my @seqpair;
+    my @seqpair;
 
-  push @seqpair,read_next_sequence($fh1);
-  push @seqpair,read_next_sequence($fh2);
+    push @seqpair,read_next_sequence($fh1);
+    push @seqpair,read_next_sequence($fh2);
 
-  return undef unless ($seqpair[0] and $seqpair[1]);
+    return undef unless ($seqpair[0] and $seqpair[1]);
 
-  return \@seqpair;
+    return \@seqpair;
 
 }
 
 sub read_next_sequence {
 
-  my ($fh) = @_;
+    my ($fh) = @_;
 
-  my $seq;
+    my $seq;
 
-  # First line is the id
-  my $id_line = <$fh>;
+    # First line is the id
+    my $id_line = <$fh>;
 
-  return undef unless ($id_line);
+    return undef unless ($id_line);
 
-  chomp $id_line;
+    chomp $id_line;
 
-  if ($id_line =~ /^\@(.+)$/) {
-    $seq->{id} = $1;
-  }
-  else {
-    die "Couldn't extract an id from '$id_line'";
-  }
+    if ($id_line =~ /^\@(.+)$/) {
+	$seq->{id} = $1;
+    }
+    else {
+	die "Couldn't extract an id from '$id_line'";
+    }
 
-  # Next line is the actual sequence
-  $seq->{seq} = <$fh>;
-  chomp $seq->{seq};
+    # Next line is the actual sequence
+    $seq->{seq} = <$fh>;
+    chomp $seq->{seq};
 
-  # next line is like first line just with a + in the start
-  $_ = <$fh>;
+    # next line is like first line just with a + in the start
+    $_ = <$fh>;
 
-  # Finally we get the quality string
-  $seq->{qual} = <$fh>;
-  chomp $seq->{qual};
+    # Finally we get the quality string
+    $seq->{qual} = <$fh>;
+    chomp $seq->{qual};
 
-  return $seq;
+    return $seq;
 
 }
 
 
 sub process_sequence {
 
-  my ($seqpair) = @_;
-  # Seqpair is an array of two sequences which each have
-  # an id (the shortened one), seq and qual value (none of the lines contain a '\n')
+    my ($seqpair) = @_;
+    # Seqpair is an array of two sequences which each have an id (the shortened one), seq and qual value
 
-  # in Louise's runs the J-bait segments are always in the second run
-  my ($is_bait) = is_bait($seqpair->[1]);
+    # the J-bait segments are always in the second file
+    my ($is_bait) = is_bait($seqpair->[1]);
 
-  if ($is_bait){
+    if ($is_bait){
+	
+	### if a bait is detected (these criteria can be adjusted) we increase the barcode count
+	++$barcode_detected;
 
+	my ($downstream_seq,$downstream_qual) = process_bait_end($seqpair);
 
-    ### if a bait is detected (these criteria can be adjusted) we increase the barcode count
-    ++$barcode_detected;
-
-    my ($downstream_seq,$downstream_qual) = process_bait_end($seqpair);
-
-    if ($downstream_seq eq 0){
-      ++$seq_too_short;
+	if ($downstream_seq eq 0){
+	    ++$seq_too_short;
+	}
+	else{
+	    ++$seq_fine;
+	    
+	    my ($barcode,$v_sequence,$v_qual) = process_v_end ($seqpair->[0]);
+	    
+	    unless ($barcode){ # if we can't detect the barcode alright we skip the sequence
+		return;
+	    }
+	    unless ($v_sequence){ # if the V-sequence became too short we skip the sequence
+		$v_seq_too_short++;
+		return;
+	    }
+	    
+	    # Here we are generating a custom  bait side file (just 20bp downstream of the bait)
+	    print {$results->{isbait}} '@',$seqpair->[1]->{id},"\n";
+	    print {$results->{isbait}} "${barcode}:$downstream_seq\n"; # using the read 1 barcode for the read 2 downstream sequence
+	    print {$results->{isbait}} "+\n";
+	    print {$results->{isbait}} "$downstream_qual\n";
+	    
+	    # This prints out the full sequence of the sequence_1 file in FastQ format
+	    print {$results->{validotherends}} '@',$seqpair->[0]->{id},"\n";
+	    print {$results->{validotherends}} "$v_sequence\n";
+	    print {$results->{validotherends}} "+\n";
+	    print {$results->{validotherends}} "$v_qual\n";
+	}
     }
-    else{
-      ++$seq_fine;
-
-      my ($barcode,$v_sequence,$v_qual) = process_v_end ($seqpair->[0]);
-
-      unless ($barcode){ # if we can't detect the barcode alright we skip the sequence
-	return;
-      }
-      unless ($v_sequence){ # if the V-sequence became too short we skip the sequence
-	$v_seq_too_short++;
-	return;
-      }
-      # Here we are generating a custom  bait side file (just 20bp downstream of the bait)
-
-      print {$results->{isbait}} '@',$seqpair->[1]->{id},"\n";
-      print {$results->{isbait}} "${barcode}:$downstream_seq\n"; # using the read 1 barcode for the read 2 downstream sequence
-      print {$results->{isbait}} "+\n";
-      print {$results->{isbait}} "$downstream_qual\n";
-
-      # This prints out the full sequence of the sequence_1 file in FastQ format
-      print {$results->{validotherends}} '@',$seqpair->[0]->{id},"\n";
-      print {$results->{validotherends}} "$v_sequence\n";
-      print {$results->{validotherends}} "+\n";
-      print {$results->{validotherends}} "$v_qual\n";
-    }
-  }
-
-  ### we can then look at the downstream sequence after the barcode to determine if a sequence is a PCR duplicate or if the sequence is unique
-  ### (VDJ recombination should also acquire some random sequence in the process. If two different random sequences are recombined to the same
-  ### V region this is a good indication that this indeed a genuine biological observation and not just a PCR product
-  #      my $diff = is_unrecombined ($downstream);
-  #     if ($diff == 1){
-  ### $recomb{$downstream}++;
-  ## if the bait was detected we will print out all bait and prey side
-  #	my $all = "\@$seqpair->[0]->{id}\{$seqpair->[0]->{seq}\{+$seqpair->[0]->{id}\{$seqpair->[0]->{qual}";#
-  #	warn "$all\n";
-  #	sleep (1);
-  #	push @{$recomb{$downstream}}, $all;
-  #      }
-  #   '@',$seqpair->[0]->{id},"\n";
-  #   print {$results->{validotherends}} $seqpair->[0]->{seq},"\n";
-  #   print {$results->{validotherends}} '+',$seqpair->[0]->{id},"\n";
-  #   print {$results->{validotherends}} $seqpair->[0]->{qual},"\n";
-
-  #print $downstream,"\n";	
-  #	print '@',$seqpair->[1]->{id},"\n";
-  #	print $seqpair->[1]->{seq},"\n";
-  #	print '+',$seqpair->[1]->{id},"\n";
-  #	print $seqpair->[1]->{qual},"\n";
-  #	sleep (1);
-  # This prints out the full sequence of the sequence_1 file in FastQ format
-  #
-  #	print {$results->{validotherends}} '@',$seqpair->[0]->{id},"\n";
-  #	print {$results->{validotherends}} $seqpair->[0]->{seq},"\n";
-  #	print {$results->{validotherends}} '+',$seqpair->[0]->{id},"\n";
-  #	print {$results->{validotherends}} $seqpair->[0]->{qual},"\n";     }
-  #}
-  #  }
-  # else{
-  #   # if the bait was not detected we will print out all bait sequences so we can investigate what else is in the file
-  #   print {$results->{no_prey}} '@',$seqpair->[1]->{id},"\n";
-  #   print {$results->{no_prey}} $seqpair->[1]->{seq},"\n";
-  #   print {$results->{no_prey}} '+',$seqpair->[1]->{id},"\n";
-  #   print {$results->{no_prey}} $seqpair->[1]->{qual},"\n";
-  # }
+    
+    # Code commented here was used at some stage to explore the data further but is not actually part of the pipeline as described in the manuscript
+    
+    ### we can then look at the downstream sequence after the barcode to determine if a sequence is a PCR duplicate or if the sequence is unique
+    ### (VDJ recombination should also acquire some random sequence in the process. If two different random sequences are recombined to the same
+    ### V region this is a good indication that this indeed a genuine biological observation and not just a PCR product
+    #      my $diff = is_unrecombined ($downstream);
+    #     if ($diff == 1){
+    ### $recomb{$downstream}++;
+    ## if the bait was detected we will print out all bait and prey side
+    #	my $all = "\@$seqpair->[0]->{id}\{$seqpair->[0]->{seq}\{+$seqpair->[0]->{id}\{$seqpair->[0]->{qual}";#
+    #	warn "$all\n";
+    #	sleep (1);
+    #	push @{$recomb{$downstream}}, $all;
+    #      }
+    #   '@',$seqpair->[0]->{id},"\n";
+    #   print {$results->{validotherends}} $seqpair->[0]->{seq},"\n";
+    #   print {$results->{validotherends}} '+',$seqpair->[0]->{id},"\n";
+    #   print {$results->{validotherends}} $seqpair->[0]->{qual},"\n";
+    
+    #print $downstream,"\n";	
+    #	print '@',$seqpair->[1]->{id},"\n";
+    #	print $seqpair->[1]->{seq},"\n";
+    #	print '+',$seqpair->[1]->{id},"\n";
+    #	print $seqpair->[1]->{qual},"\n";
+    #	sleep (1);
+    # This prints out the full sequence of the sequence_1 file in FastQ format
+    #
+    #	print {$results->{validotherends}} '@',$seqpair->[0]->{id},"\n";
+    #	print {$results->{validotherends}} $seqpair->[0]->{seq},"\n";
+    #	print {$results->{validotherends}} '+',$seqpair->[0]->{id},"\n";
+    #	print {$results->{validotherends}} $seqpair->[0]->{qual},"\n";     }
+    #}
+    #  }
+    # else{
+    #   # if the bait was not detected we will print out all bait sequences so we can investigate what else is in the file
+    #   print {$results->{no_prey}} '@',$seqpair->[1]->{id},"\n";
+    #   print {$results->{no_prey}} $seqpair->[1]->{seq},"\n";
+    #   print {$results->{no_prey}} '+',$seqpair->[1]->{id},"\n";
+    #   print {$results->{no_prey}} $seqpair->[1]->{qual},"\n";
+    # }
 }
 
+
+
+
 sub process_v_end{
-  my ($seq) = shift;
+    
+    ### This subroutine will inspect the V end of the reads which should be in one of the following two configurations:
+    # 6N barcode   constant sequence    genuine V-region sequence
+    #   NNNNNN          GACTCGT              V-sequence
+    #   NNNNNN          CTGCTCCT             V-sequence 
+    
+    my ($seq) = shift;
 
-  my $sequence = $seq->{seq};
-  # warn "$sequence\n";sleep(1);
-  $sequence =~ /(.{6})(.{8})/;
+    my $sequence = $seq->{seq};
+    # warn "$sequence\n";sleep(1);
+    $sequence =~ /(.{6})(.{8})/;
+    
+    my $barcode = substr($sequence,0,7);
+    my $known = $2;
+    if ($known =~ /^GACTCGT/){
+	# warn "fine\n";
+	$known_1++;
+    }
+    elsif($known =~ /^CTGCTCCT/){
+	# warn "fine, too\n"; 
+	$known_2++;
+    }
+    else{
+	# warn "discarding\n\n";
+	++$bad_tag;
+	$barcode = ''; # setting this to an empty string will exit the process in the validation step
+    }
+    my $v_sequence = substr($sequence,15);  # exluding the barcode and constant anchor sequence
+    my $v_qual = substr($seq->{qual},15);   # exluding the barcode and constant anchor sequence
+    # warn "$barcode\t$known\t$v_sequence\n";sleep(1);
+    
+    return ($barcode,$v_sequence,$v_qual);
 
-  my $barcode = substr($sequence,0,7);
-  my $known = $2;
-  if ($known =~ /^GACTCGT/){
-    # warn "fine\n";
-    $known_1++;
-  }
-  elsif($known =~ /^CTGCTCCT/){
-    # warn "fine, too\n"; 
-    $known_2++;
-  }
-  else{
-    # warn "discarding\n\n";
-    ++$bad_tag;
-    $barcode = ''; # setting this to an empty string will exit the process in the validation step
-  }
-  my $v_sequence = substr($sequence,16);
-  my $v_qual = substr($seq->{qual},16);
-  # warn "$barcode\t$known\t$v_sequence\n";sleep(1);
-
-  #  unless (length $v_sequence == 100){
-  #    $v_sequence = ''; # setting this to an empty string will exit the process in the validation step
-  #  }
-
-  return ($barcode,$v_sequence,$v_qual);
 }
 
 sub is_unrecombined {
-  my ($seq) = @_;
-  my $unrecomb = 'GCATAGTAATCACAATAGTGGATTTTTCCT';
-  #  print "$seq\n$unrecomb\n";
-  # sleep (1);
+    my ($seq) = @_;
+    my $unrecomb = 'GCATAGTAATCACAATAGTGGATTTTTCCT';
+    #  print "$seq\n$unrecomb\n";
+    # sleep (1);
 
-  my @seq = split(//,$seq);
-  my @unrecomb = split(//,$unrecomb);
-  # print "seq: $seq->{seq}\n";
-  # print "bait:";
-  # print  join ('',@bait),"\n\n";
+    my @seq = split(//,$seq);
+    my @unrecomb = split(//,$unrecomb);
+    # print "seq: $seq->{seq}\n";
+    # print "bait:";
+    # print  join ('',@bait),"\n\n";
 
-  my $n_count = 0;
-  my $match_count = 0;
-  my $mismatch_count = 0;
+    my $n_count = 0;
+    my $match_count = 0;
+    my $mismatch_count = 0;
 
-  for my $index (0..$#unrecomb){
+    for my $index (0..$#unrecomb){
 
-    #   last if ($quality[$index] eq '#'); # Quality is rubbish
+	#   last if ($quality[$index] eq '#'); # Quality is rubbish
 
-    if ($seq[$index] eq 'N') {
-      ++$n_count;
+	if ($seq[$index] eq 'N') {
+	    ++$n_count;
+	}
+	elsif ($seq[$index] eq $unrecomb[$index]) {
+	    ++$match_count;
+	}
+	else {
+	    ++$mismatch_count;
+	}
     }
-    elsif ($seq[$index] eq $unrecomb[$index]) {
-      ++$match_count;
-    }
-    else {
-      ++$mismatch_count;
-    }
-  }
 
-  $mismatches{$mismatch_count}++;
+    $mismatches{$mismatch_count}++;
 
-  # warn "match count: $match_count\nN count: $n_count\nmismatch count: $mismatch_count\n";
-  # some element of the sequence is rubbish
-  if ($match_count ==30){
-    # warn "perfect match!\n";
-    $perfect_unrecomb++;
-    return 0;
-  }
-  if ($mismatch_count >= 1 and $mismatch_count <= 5 ) {
-    #warn "Number of mismatches: $mismatch_count\n";
-    $mismatch_unrecomb++;
-    return 0;
-  }
-  else{
-    $different_seq++;
-    return 1;
-  }
+    # warn "match count: $match_count\nN count: $n_count\nmismatch count: $mismatch_count\n";
+    # some element of the sequence is rubbish
+    if ($match_count ==30){
+	# warn "perfect match!\n";
+	$perfect_unrecomb++;
+	return 0;
+    }
+    if ($mismatch_count >= 1 and $mismatch_count <= 5 ) {
+	#warn "Number of mismatches: $mismatch_count\n";
+	$mismatch_unrecomb++;
+	return 0;
+    }
+    else{
+	$different_seq++;
+	return 1;
+    }
 }
 
 
 sub is_bait {
 
-  my ($seq) = @_;
-  #  warn "full sequences is: $seq->{seq}\n";
-  # $seq->{seq} =~ /^(.{6})/;
-  # my $barcode = $1;
-  # warn "barcode is $barcode\n";
+    my ($seq) = @_;
+    #  warn "full sequences is: $seq->{seq}\n";
+    # $seq->{seq} =~ /^(.{6})/;
+    # my $barcode = $1;
+    # warn "barcode is $barcode\n";
 
-  # my $mod_seq = substr($seq->{seq},6); # starting at base 7 to the end
-  # warn "modified sequence: $mod_seq\n\n"; sleep(3);
+    # my $mod_seq = substr($seq->{seq},6); # starting at base 7 to the end
+    # warn "modified sequence: $mod_seq\n\n"; sleep(3);
 
-  my @seq = split(//,$seq->{seq});
-  # my @seq = split(//,$mod_seq);
+    my @seq = split(//,$seq->{seq});
+    # my @seq = split(//,$mod_seq);
 
-  my @quality = split(//,$seq->{qual});
-  # print "seq: $seq->{seq}\n";
-  # print "bait:";
-  # print  join ('',@bait),"\n\n";
-  unless (@quality){
-      warn "$seq->{seq}\n$seq->{qual}$\n"
-  }
-  my $n_count = 0;
-  my $match_count = 0;
-  my $mismatch_count = 0;
-
-  for my $index (0..$#bait) {
-      unless ($quality[$index]){
-#	  warn "$seq->{seq}\n$seq->{qual}\n"
-      }
-    last if ($index > $#seq);
-      last if ($index > $#quality);
-    last if ($quality[$index] eq '#'); # Quality is rubbish
-
-    if ($seq[$index] eq 'N') {
-      ++$n_count;
+    my @quality = split(//,$seq->{qual});
+    # print "seq: $seq->{seq}\n";
+    # print "bait:";
+    # print  join ('',@bait),"\n\n";
+    unless (@quality){
+	warn "$seq->{seq}\n$seq->{qual}$\n"
     }
-    elsif ($seq[$index] eq $bait[$index]) {
-      ++$match_count;
-    }
-    else {
-      ++$mismatch_count;
-    }
-  }
+    my $n_count = 0;
+    my $match_count = 0;
+    my $mismatch_count = 0;
 
-  # warn "match count: $match_count\nN count: $n_count\nmismatch count: $mismatch_count\n";
+    for my $index (0..$#bait) {
+	unless ($quality[$index]){
+	    # warn "$seq->{seq}\n$seq->{qual}\n"
+	}
+	last if ($index > $#seq);
+	last if ($index > $#quality);
+	last if ($quality[$index] eq '#'); # Quality is rubbish
 
-  # some element of the sequence is rubbish
-  #  if ($match_count < scalar @bait or $n_count > 2 or $mismatch_count > 1) {
-  if ($match_count < scalar(@bait) - 5 ){
-    return (0);
-  }
-  else{
-    return (1);
-  }
+	if ($seq[$index] eq 'N') {
+	    ++$n_count;
+	}
+	elsif ($seq[$index] eq $bait[$index]) {
+	    ++$match_count;
+	}
+	else {
+	    ++$mismatch_count;
+	}
+    }
+
+    # warn "match count: $match_count\nN count: $n_count\nmismatch count: $mismatch_count\n";
+
+    # some element of the sequence is rubbish
+    #  if ($match_count < scalar @bait or $n_count > 2 or $mismatch_count > 1) {
+    if ($match_count < scalar(@bait) - 5 ){
+	return (0);
+    }
+    else{
+	return (1);
+    }
 }
 
 sub process_bait_end {
 
-  my ($seqpair) = @_;
+    my ($seqpair) = @_;
 
-  # Extracting the sequence after the J-segment barcode
-  my $downstream_sequence;
-  my $downstream_quality;
-  if ( (length($seqpair->[1]->{seq})-scalar @bait) >= 20) {
-    # warn "Sequence is longer than 60bp\n";
+    # Extracting the sequence after the J-segment barcode
+    my $downstream_sequence;
+    my $downstream_quality;
+    if ( (length($seqpair->[1]->{seq})-scalar @bait) >= 20) {
+	# warn "Sequence is longer than 60bp\n";
 
-    $downstream_sequence = substr($seqpair->[1]->{seq},scalar @bait,20);
-    $downstream_quality = substr($seqpair->[1]->{qual},scalar @bait,20);
-    # warn "$downstream_sequence\n";
-    # warn "$downstream_quality\n";
-    # sleep(1);
+	$downstream_sequence = substr($seqpair->[1]->{seq},scalar @bait,20);
+	$downstream_quality = substr($seqpair->[1]->{qual},scalar @bait,20);
+	# warn "$downstream_sequence\n";
+	# warn "$downstream_quality\n";
+	# sleep(1);
 
-    #    if (exists $uniques{$downstream_sequence}){
-    #      $uniques{$downstream_sequence}++;
-    #      ++$downstream_seq_already_existed;
-    #    }
-    #    else{
-    #      $uniques{$downstream_sequence}++;
-    #      # $uniques{$downstream_sequence} = $seqpair;
-    #   }
-    # Print out the sequence downstream of the to a FastQ file
-    #  print {$results->{isbait}} '@',$seq->{id},"\n";
-    #  print {$results->{isbait}} $downstream_sequence,"\n";
-    #  print {$results->{isbait}} '+',$seq->{id},"\n";
-    #  print {$results->{isbait}} substr($seq->{qual},$offset,length $downstream_sequence),"\n";
+	#    if (exists $uniques{$downstream_sequence}){
+	#      $uniques{$downstream_sequence}++;
+	#      ++$downstream_seq_already_existed;
+	#    }
+	#    else{
+	#      $uniques{$downstream_sequence}++;
+	#      # $uniques{$downstream_sequence} = $seqpair;
+	#   }
+	# Print out the sequence downstream of the to a FastQ file
+	#  print {$results->{isbait}} '@',$seq->{id},"\n";
+	#  print {$results->{isbait}} $downstream_sequence,"\n";
+	#  print {$results->{isbait}} '+',$seq->{id},"\n";
+	#  print {$results->{isbait}} substr($seq->{qual},$offset,length $downstream_sequence),"\n";
 
-    return ($downstream_sequence,$downstream_quality);
-  }
-  else{
-    # warn "Sequence too short: $seqpair->[1]->{seq}\n";
-    return 0;
-3  }
+	return ($downstream_sequence,$downstream_quality);
+    }
+    else{
+	# warn "Sequence too short: $seqpair->[1]->{seq}\n";
+	return 0;
+    }
 
 }
 
 sub print_results{
 
-  warn "Printing results\n\n";
+    warn "Printing results\n\n";
 
-  foreach my $seq (keys %uniques){
-    # if the bait was detected we will print out all bait and prey side
-    ++$unique_counter;
+    foreach my $seq (keys %uniques){
+	# if the bait was detected we will print out all bait and prey side
+	++$unique_counter;
 
-    print {$results->{isbait}} '@',${$uniques{$seq}}[1]->{id}  ,"\n";
-    print {$results->{isbait}}     ${$uniques{$seq}}[1]->{seq} ,"\n";
-  print {$results->{isbait}} '+',${$uniques{$seq}}[1]->{id}  ,"\n";
-  print {$results->{isbait}}     ${$uniques{$seq}}[1]->{qual},"\n";
+	print {$results->{isbait}} '@',${$uniques{$seq}}[1]->{id}  ,"\n";
+	print {$results->{isbait}}     ${$uniques{$seq}}[1]->{seq} ,"\n";
+	print {$results->{isbait}} '+',${$uniques{$seq}}[1]->{id}  ,"\n";
+	print {$results->{isbait}}     ${$uniques{$seq}}[1]->{qual},"\n";
 
-  print {$results->{validotherends}} '@',${$uniques{$seq}}[0]->{id} ,"\n";
-print {$results->{validotherends}}     ${$uniques{$seq}}[0]->{seq}  ,"\n";
-print {$results->{validotherends}} '+',${$uniques{$seq}}[0]->{id}   ,"\n";
-print {$results->{validotherends}}     ${$uniques{$seq}}[0]->{qual} ,"\n";
+	print {$results->{validotherends}} '@',${$uniques{$seq}}[0]->{id} ,"\n";
+	print {$results->{validotherends}}     ${$uniques{$seq}}[0]->{seq}  ,"\n";
+	print {$results->{validotherends}} '+',${$uniques{$seq}}[0]->{id}   ,"\n";
+	print {$results->{validotherends}}     ${$uniques{$seq}}[0]->{qual} ,"\n";
 
-  }
+    }
 }
 
 sub print_helpfile{
