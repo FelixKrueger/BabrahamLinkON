@@ -82,7 +82,9 @@ JJIIIIJFHIJIIFHGFFFF
 ```
 This file will be required for deduplication of V-gene hits in Step 5.
 
-- Will extract the V-gene sequence from Read 1, starting from base 15 (V-reads look like this `NNNNNN AAAAAAA(A) T VVVVVVVVVVVV...`, whereby `N` means random nucleotide (barcode), `A` is the anchor sequence (see above), `T` is a T to bind to A-tailed fragments, and `V` is true V-gene sequence we are interested in. The V-gene sequences are output in FastQ format, e.g. `Jk1.prey_side.fastq`:
+- Will extract the V-gene sequence from Read 1, starting from base 15 (V-reads look like this:
+`NNNNNN AAAAAAA(A) T VVVVVVVVVVVV...`,
+whereby `N` means random nucleotide (barcode), `A` is the anchor sequence (see above), `T` is a T to bind to A-tailed fragments, and `V` is true V-gene sequence we are interested in. The V-gene sequences are output in FastQ format, e.g. `Jk1.prey_side.fastq`:
 
 ```
 @HWI-1KL136:275:C4HL3ACXX:1:1101:7055:1987 1:N:0:CAGATC
@@ -92,6 +94,11 @@ JIJJJJJJJJJJJHIJJJIGIIJIIIIJJJJJIIJJJJJIJJJJIIJJJJIGGGJHGFFFA=>BDDDCDDDDDDDDDDDD
 ```
 
 ### Step 4: Aligning the V-end to the genome
+V-gene reads were aligned very stringently to the mouse genome (build NCBIM37) using Bowtie. Multimapping reads were discarded.
+
+```
+bowtie -t -p 6 --chunkmbs 2048 -S --strata -m 1 --best NCBIM37/Mus_musculus.NCBIM37 VkJk_test_V-region_val_1.Jk1.prey_side.fastq | samtools view -bS - > VkJk_test_V-region_val_1.Jk1.prey_side.bam
+```
 
 ### Step 5: Deduplicating the output results
 
