@@ -94,7 +94,7 @@ JIJJJJJJJJJJJHIJJJIGIIJIIIIJJJJJIIJJJJJIJJJJIIJJJJIGGGJHGFFFA=>BDDDCDDDDDDDDDDDD
 ```
 
 ### Step 4: Aligning the V-end to the genome
-V-gene reads were aligned very stringently to the mouse genome (build NCBIM37) using Bowtie. Multimapping reads were discarded.
+V-gene reads were aligned very stringently to the mouse genome (build NCBIM37) using Bowtie. Multimapping reads were discarded. Here is an example command:
 
 ```
 bowtie -t -p 6 --chunkmbs 2048 -S --strata -m 1 --best NCBIM37/Mus_musculus.NCBIM37 VkJk_test_V-region_val_1.Jk1.prey_side.fastq | samtools view -bS - > VkJk_test_V-region_val_1.Jk1.prey_side.bam
