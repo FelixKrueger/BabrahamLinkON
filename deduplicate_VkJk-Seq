@@ -1,0 +1,828 @@
+#!/usr/bin/env perl
+use warnings;
+use strict;
+
+### This script:
+###
+### a) stores all starting positions of V-side alignments
+### b) uses 20 bp downstream of the J-region bait fragment
+### c) uses the 7bp barcode sequence (see the BabrahamLikON VkJk-Seq step for more details)
+###
+### to deduplicate V-alignments. The J-read sequence looks like this:
+### TAGACTG:CGTCCACGGGAATGTGTAAA (7N Barcode : 20bp J downstream sequence)
+
+### Last modified 28 07 2017
+
+
+my @bait_side = glob ('*bait_side.txt');
+my @v_alignment = glob ('*.bam');
+
+my %hits; # storing ALL V-region alignments
+my %unique;
+my %J_ann; # J-regions
+my %D_ann; # D-regions, possibly need this later
+my %V_ann; # V-annotations
+
+foreach my $index (0..$#bait_side){
+    %hits = ();
+    %unique = ();
+    
+    warn "Now analysing the following two files:\n$bait_side[$index]\n$v_alignment[$index]\n\n";
+    
+    my $j_seq = $bait_side[$index];
+    my $v_alignments = $v_alignment[$index];
+    die "Please provide both a J-region FastQ and V-region SAM (or BAM) file to continue (in exactly this order!)\n\n" unless ($j_seq and $v_alignments);
+    die "Please provide both a J-region FastQ and V-region SAM (or BAM) file to continue (in exactly this order!)\n\n" unless ($j_seq =~ /(bait_side\.txt|bait_side\.txt\.gz)$/ and $v_alignments =~ /(sam|bam)$/);
+
+    my $annotation_file;
+    
+    my $out = $j_seq;
+    $out =~ s/(bait_side\.txt|bait_side\.txt\.gz)$/unique_V.bam/;
+    open (OUT," | samtools view -bS - > $out") or die "Failed to write to BAM file: $!\n\n";
+    warn "Writing unique V fragments to '$out'\n";
+    
+    my $report = $j_seq;
+    $report =~ s/(bait_side\.txt|bait_side\.txt\.gz)$/V_report.txt/;
+    open (REPORT,'>',$report) or die $!;
+    warn "Writing V report to '$report'\n\n";
+    
+    
+    store_V_alignments($v_alignments);
+    read_J_downstream_and_barcode_sequence($j_seq);
+    
+    my $incr = 0;
+    print REPORT "Top 100 most frequent sequences downstream of the J-segment with V-ends starting at different positions:\n";
+    
+    foreach my $seq (sort {$unique{$b}->{count}<=>$unique{$a}->{count}} keys %unique){
+      ++$incr;
+      last if ($incr > 100);
+      print REPORT "$seq\t$unique{$seq}->{count}\n";
+      #  foreach my $key(keys %{$unique{$id}->{start}}){
+      #    print "$key\t";
+      #  }
+    }
+    
+    warn "\n\n         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n\n";
+
+}
+
+sub store_V_alignments{
+    my $v_alignments = shift;
+    warn "Now storing V-regions alignments using file >$v_alignments<...\n";
+
+    if ($v_alignments =~ /\.bam$/){
+	open (VEE,"samtools view -h $v_alignments |") or die $!;
+    }
+    else{
+	open (VEE,$v_alignments) or die $!;
+    }
+
+    my $count = 0;
+
+    while (<VEE>){
+
+	if ($_ =~ /^\@/){
+	    print OUT; # writing header lines back out to unique_V file.
+	    next;  # skipping SAM header lines
+	}
+	
+	my ($id,$flag,$chr,$start,$cigar,$seq) = (split (/\t/))[0,1,2,3,5,9];
+	next if ($flag == 4); # unmapped
+	
+	# sequence aligned in reverse orientation
+	if ($flag == 16){
+	    $start += length($seq) - 1; # fine here since the sequence was aligned in ungapped mode
+	}
+
+	#    print join ("\t",$id,$chr,$start,$end,$cigar),"\n";
+	#    sleep(1);
+	
+	$hits{$id}->{aln} = $_;	
+	$hits{$id}->{start} = $start;
+	
+	++$count;
+    }
+    
+    warn "Number of V alignments stored: $count\n\n";
+    print REPORT "Number of V alignments stored: $count\n\n";
+
+}
+
+sub read_J_downstream_and_barcode_sequence{
+    my $j_seq = shift;
+    warn "Now reading 20 bp of J sequence as well as the 7bp barcodes...\n";
+    
+    ### we can now read the J sequence, see if it was unique and print the V-alignment if the fragment was unique
+    if ($j_seq =~ /gz$/){
+	open (JSEQ,"zcat $j_seq |") or die $!;
+    }
+    else{
+	open (JSEQ,$j_seq) or die $!;
+    }
+
+    my $count = 0;
+    my $stored = 0;
+    my $duplicate = 0;
+    my $too_short = 0;
+
+  SEQ:  while (1){
+      my $id = <JSEQ>;
+      my $seq = <JSEQ>;
+      my $three = <JSEQ>;
+      my $qual = <JSEQ>;
+
+      last unless ($qual);
+      ++$count;
+      chomp $id;
+      chomp $seq;
+      
+      # warn "$seq\n";
+      # (my $barcode,$seq) = (split/:/,$seq);
+      # warn "$barcode $seq\n";
+      # sleep(1);
+      
+      # print "$id\n";
+      $id =~ s/\s.*$//;
+      # print "$id\n";
+      $id =~ s/^\@//;
+      # print "$id\n";
+      # sleep (1);
+
+      if (exists $hits{$id}){
+	  # warn "sequence aligned:\n$id\t$seq$hits{$id}->{aln}\n\n";
+
+	  ### In the latest version of the assay we use a compound string consisting of a barcode and sequence, such as this:
+	  ### ACAGGGG:GCCTCCTGAGTGCTGGAATC
+	  
+	  if (exists $unique{$seq}){
+	      # warn "sequence already existed\n";
+	      # warn "$seq\n";
+	      
+	      ### discriminate V-region starting position
+	      if (exists $unique{$seq}->{start}->{$hits{$id}->{start}}){
+		  # warn "position existed already with the same V-fragment starting position: $hits{$id}->{start}\n";
+		  ++$duplicate;
+		  next SEQ; # skipping this sequence altogether (duplicate J sequence and V-end)
+	      }
+	      else{	
+		  ++$stored;
+		  $unique{$seq}->{count}++;
+		  $unique{$seq}->{start}->{$hits{$id}->{start}}++;
+		  
+		  # writing out the V-sequence alignment
+		  print OUT "$hits{$id}->{aln}";
+		  
+		  # warn "J-sequence already present, but adding a new start position: $hits{$id}->{start}\n";
+	      }
+	  }
+	  else{
+	      ++$stored;
+	      # warn "sequence is unique:\n$seq\n";
+	      # writing out the V-sequence alignment
+	      print OUT "$hits{$id}->{aln}";
+	      
+	      $unique{$seq}->{count}++;
+	      $unique{$seq}->{start}->{$hits{$id}->{start}}++;
+	      # warn "adding start positions: $hits{$id}->{start}\n";
+	  }
+      }
+  }
+
+    my $percentage = sprintf("%.2f",$stored*100/$count);
+
+    warn "Processed $count sequences from file $j_seq in total\n";
+    warn "Unique V-alignments written out: $stored ($percentage%)\n";
+    warn "J sequences got removed (likely PCR duplicates: $duplicate)\n\n";
+    
+    print REPORT "Processed $count sequences from file $j_seq in total\n";
+    print REPORT "Unique V-alignments written out: $stored ($percentage%)\n";
+    print REPORT "J sequences got removed (likely PCR duplicates: $duplicate)\n\n";
+
+}
+
+
+
+
+sub read_long_J_sequence{
+
+  my $j_seq = shift;
+
+  warn "Now storing 80 bp of J sequence ...\n";
+  if ($j_seq =~ /gz$/){
+    open (JSEQ,"zcat $j_seq |") or die $!;
+  }
+  else{
+    open (JSEQ,$j_seq) or die $!;
+  }
+
+  my $count = 0;
+  my $stored = 0;
+  my $too_short = 0;
+
+  while (1){
+    my $id = <JSEQ>;
+    my $seq = <JSEQ>;
+    my $three = <JSEQ>;
+    my $qual = <JSEQ>;
+
+    last unless ($qual);
+    ++$count;
+    chomp $id;
+
+    # print "$id\n";
+    $id =~ s/\s.*$//;
+    # print "$id\n";
+    $id =~ s/^\@//;
+    # print "$id\n";
+    #  sleep (1);
+
+    if (exists $hits{$id}){
+      chomp $seq;
+
+      unless (length$seq >= 80){
+	++$too_short;
+	delete $hits{$id};
+	next;
+      }
+
+      # extracting subsequence
+      my $j_fragment = substr($seq,0,80);
+      $hits{$id}->{long_j_sequence} = $j_fragment;
+      ++$stored;
+    }
+
+  }
+
+  warn "Processed $count sequences from file $j_seq in total\n";
+  warn "J sequences (80bp) being stored: $stored\n";
+  warn "J sequences got removed due to being shorter than 80bp: $too_short\n\n";
+  print REPORT "Processed $count sequences from file $j_seq in total\n";
+  print REPORT "J sequences (80bp) being stored: $stored\n";
+  print REPORT "J sequences got removed due to being shorter than 80bp: $too_short\n\n";
+  sleep(1);
+
+}
+
+
+sub read_long_V_sequence{
+  my $v_seq;
+  warn "Now storing 80 bp of V sequence ...\n";
+  if ($v_seq =~ /gz$/){
+    open (VSEQ,"zcat $v_seq |") or die $!;
+  }
+  else{
+    open (VSEQ,$v_seq) or die $!;
+  }
+
+  my $count = 0;
+  my $stored = 0;
+  my $too_short = 0;
+
+  while (1){
+    my $id = <VSEQ>;
+    my $seq = <VSEQ>;
+    my $three = <VSEQ>;
+    my $qual = <VSEQ>;
+
+    last unless ($qual);
+    ++$count;
+
+    chomp $id;
+    $id =~ s/\s.*$//;
+    $id =~ s/^\@//;
+
+    if (exists $hits{$id}){
+      chomp $seq;
+
+      #      unless (length$seq >= 80){
+      #	++$too_short;
+      #	delete $hits{$id};
+      #	next;
+      #      }
+
+      # extracting subsequence
+      my $v_fragment = substr($seq,0,80); # for the V fragment we just store any sequence we get and score the degree of similarity based on a % difference level
+      $hits{$id}->{long_v_sequence} = $v_fragment;
+      ++$stored;
+    }
+
+  }
+
+  warn "Processed $count sequences from file $v_seq in total\n";
+  warn "V sequences (80bp) being stored: $stored\n\n";
+  print REPORT "Processed $count sequences from file $v_seq in total\n";
+  print REPORT "V sequences (80bp) being stored: $stored\n\n";
+  # warn "V sequences got removed due to being shorter than 80bp: $too_short\n\n";
+  sleep(1);
+
+}
+
+
+
+sub remove_replicates{
+  my $deleted = 0;
+  my $duplicate = 0;
+  my $same_same_but_different = 0;
+
+  warn "Now removing duplicate read fragments...\n";
+  print REPORT "Now removing duplicate read fragments...\n";
+  sleep(1);
+
+  foreach my $id (keys %hits){
+
+    unless (defined $hits{$id}->{j} and defined $hits{$id}->{v} ){
+      # warn "deleting $id since it did not have both a J and V region hit at the same time\n";
+      delete $hits{$id};
+      ++$deleted;
+      next;
+    }
+  }
+
+  warn "Deleted $deleted entries since they did not have both a J and V hit\n";
+  warn "Number of J-V sequences stored at this point: ",scalar keys %hits," \n\n";
+  print REPORT "Deleted $deleted entries since they did not have both a J and V hit\n";
+  print REPORT "Number of J-V sequences stored at this point: ",scalar keys %hits," \n\n";
+
+  my $proper_read_pairs = scalar keys %hits;
+
+  ### At this stage we need to read in the entire sequence from the J and V end to decide whether the sequence is unique or not
+  read_long_J_sequence ();
+  read_long_V_sequence ();
+
+  my $j_saved_by_v = 0;
+  my $entries = 0;
+
+  foreach my $id (keys %hits){
+    ### comparing the starting positions to pre-existing fragments
+
+    ++$entries;
+    if ($entries%10000 == 0){
+      warn "deduplicated $entries entries already (positions so far: ",scalar keys %unique,")\n";
+    }
+
+
+    ######################## THIS PART IS DIFFERENT FOR PAIRED END SEQUENCING!!! ##########################################
+
+
+    my $composite = "$hits{$id}->{j_start}:$hits{$id}->{v_end}"; # the start of the V fragment is in fact it's end (as the fragments align in reverse orientation)
+    # warn "$composite\n";
+
+    if (exists $unique{$composite}){
+      # warn "fragments already existed\n";
+	
+      my $is_unique = 1;
+
+      foreach my $index (0..$#{$unique{$composite}}){
+
+	### Now we are looking at the J sequence and determine how closely related they are
+	my $similar_j = are_very_similar_j ( $unique{$composite}[$index] , $hits{$id}->{long_j_sequence});
+
+	# sequence is very similar so this is considered a duplicate read which will be removed
+	if ($similar_j == 1){
+
+	  $is_unique = 0; # setting the sequence to = duplicate. Only a good V-region (or Chuck Norris) can save it now...
+	
+	  # ... and so we only need to check the other end to see if the sequence has the same V-end sequence (which would then be considered a true PCR duplicate)
+	  my $similar_v = are_very_similar_v ( $unique{$composite}[$index] , $hits{$id}->{long_v_sequence});
+
+	  if ($similar_v == 1){
+	    # alright that's it now
+	    ++$duplicate;
+	    delete $hits{$id};
+	    last; # exiting the foreach loop now
+	  }
+	  elsif($similar_v == 0){
+	    $is_unique = 1; ### V regions seems to be reasonably different now
+	    ++$j_saved_by_v;
+	  }
+	}
+
+      }
+
+      # sequence is considered a new variant for a known position
+      if ($is_unique == 1){
+	push @{$unique{$composite}}, "$hits{$id}->{long_j_sequence}:$hits{$id}->{long_v_sequence}";
+	++$same_same_but_different;
+	print OUT "$id\t$hits{$id}->{j}\t$hits{$id}->{v}\t$hits{$id}->{long_j_sequence}\t$hits{$id}->{long_v_sequence}\n";
+      }
+
+    }
+
+    else{
+      push @{$unique{$composite}}, "$hits{$id}->{long_j_sequence}:$hits{$id}->{long_v_sequence}";
+    }
+    # sleep(1);
+  }
+
+
+  my $percent_duplicated = sprintf ("%.1f",$duplicate/$proper_read_pairs * 100);
+
+  warn "Fragments aligned to the same position but were considered new unique fragments: $same_same_but_different\n";
+  warn "Fragments had an almost identical J sequence but were 'saved' by the V sequence: $j_saved_by_v\n";
+  warn "Fragments aligned to the same position but were considered duplicate entries and were removed: $duplicate ($percent_duplicated%)\n\n";
+  print REPORT "Fragments aligned to the same position but were considered new unique fragments: $same_same_but_different\n";
+  print REPORT "Fragments had an almost identical J sequence but were 'saved' by the V sequence: $j_saved_by_v\n";
+  print REPORT "Fragments aligned to the same position but were considered duplicate entries and were removed: $duplicate ($percent_duplicated%)\n\n";
+
+  sleep(1);
+
+  # foreach my $composite(keys %unique){
+  #   foreach my $seq (@{$unique{$composite}}){
+  #     # print "$composite\t$seq\n";
+  #  }
+  #}
+
+}
+
+
+sub are_very_similar_j{
+
+  my $unique_sequence = shift;
+  my $new_seq = shift;
+  # print "$unique_sequence\n$new_seq\n";
+  my ($existing_seq) = (split(/:/,$unique_sequence));
+
+  # use substr
+ if (length $new_seq == length $existing_seq){
+    if ($new_seq eq $existing_seq){
+      # warn "bailed\n"; # bailing out straight away
+      return 1; # sequences are identical
+    }
+  }
+  else{ # sequences are not of the same length
+    if(length $new_seq > length $existing_seq){
+      $new_seq = substr($new_seq,0,length $existing_seq); # shortening $new_seq to the same length as $existing_seq
+      if ($new_seq eq $existing_seq){
+	# warn "bailed\n"; # bailing out straight away
+  	return 1; # sequences are identical
+      }
+    }
+    else{ # $exisiting_seq is longer than $new_seq
+      $existing_seq = substr($existing_seq,0,length $new_seq); # shortening $existing_seq to the same length as $new_seq
+      if ($new_seq eq $existing_seq){
+	# warn "bailed\n"; # bailing out straight away
+	return 1; # sequences are identical
+      }
+    }
+  }
+
+  ### we require that a sequences is at least $percentage_threshold different to the existing sequence for it to count as a new sequence
+  my $percentage_threshold = 0.02;
+  my $threshold = int($percentage_threshold * length ($existing_seq)+1);
+  # warn "threshold is: $threshold\n";
+
+  my $n_count = 0;
+  # my $match_count = 0;
+  my $mismatch_count = 0;
+
+  # my @existing_seq = split (//,$existing_seq);
+  # my @new_seq = split (//,$new_seq);
+  # print join " ",@existing_seq,"\n";
+  # print join " ",@new_seq,"\n";
+
+  for my $offset ( 0..(length($existing_seq)-1) ) {
+
+    if ( substr($new_seq,$offset,1) eq 'N' ) {
+      # ++$n_count; # irrelevant
+    }
+    elsif ( substr($new_seq,$offset,1) eq substr($existing_seq,$offset,1) ) {
+      # ++$match_count; #irrelevant
+    }
+    else {
+      ++$mismatch_count;
+
+      if ($mismatch_count > $threshold) {
+	return 0; # bailing out early as sequence is reasonably different already
+      }
+    }
+  }
+  # warn "match count: $match_count\nN count: $n_count\nmismatch count: $mismatch_count\n";
+
+  if ($mismatch_count > $threshold) {
+    #  print join " ",@existing_seq,"\n";
+    #  print join " ",@new_seq,"\n";
+    #  warn "match count: $match_count\nN count: $n_count\nmismatch count: $mismatch_count\n";
+    #  warn "sequence is reasonably different\n";
+    #  sleep(1);
+    return 0; # sequence is reasonably different
+  }
+  else{
+    #  warn "sequence is very similar and will be kicked...\n";
+    return 1; # sequence is the too similar
+  }
+}
+
+sub are_very_similar_v{
+
+  my $unique_sequence = shift;
+  my $new_seq = shift;
+  #  print "$unique_sequence\n$new_seq\n";
+
+  my (undef,$existing_seq) = (split(/:/,$unique_sequence));
+  #  print "$existing_seq\n";
+
+  my @existing_seq = split (//,$existing_seq);
+  my @new_seq = split (//,$new_seq);
+  #  print join " ",@existing_seq,"\n";
+  #  print join " ",@new_seq,"\n";
+  # sleep(1);
+
+  my $n_count = 0;
+  my $match_count = 0;
+  my $mismatch_count = 0;
+
+  for my $index (0..$#existing_seq) {
+
+    last if ($index > $#new_seq);
+
+    if ($new_seq[$index] eq 'N') {
+      ++$n_count;
+    }
+    elsif ($new_seq[$index] eq $existing_seq[$index]) {
+      ++$match_count;
+    }
+    else {
+      ++$mismatch_count;
+    }
+  }
+
+  # warn "match count: $match_count\nN count: $n_count\nmismatch count: $mismatch_count\n";
+
+  ### we require that a sequences is at least $percentage_threshold different to the existing sequence for it to count as a new sequence
+  my $percentage_threshold = 0.05;
+  # sleep(1);
+
+  my $threshold = int($percentage_threshold * length ($existing_seq)) + 1; # rounding up
+  # warn "threshold is: $threshold\n";
+
+  if ($mismatch_count > $threshold) {
+    # print join " ",@existing_seq,"\n";
+    # print join " ",@new_seq,"\n";
+    # warn "match count: $match_count\nN count: $n_count\nmismatch count: $mismatch_count\n";
+    # warn "sequence is reasonably different\n";
+    # sleep(3);
+    return 0; # sequence is reasonably different
+  }
+  else{
+    # warn "sequence is very similar and will be kicked...\n";
+    return 1; # sequence is too similar
+  }
+}
+
+
+sub generate_JV_matrix{
+
+  warn "Generating J-V frequency matrix of the remaining unique fragments (",scalar keys %hits,")...\n";
+  print REPORT "Generating J-V frequency matrix of the remaining unique fragments (",scalar keys %hits,")...\n";
+
+  sleep (1);
+
+  foreach my $id (keys %hits){
+    next unless (defined $hits{$id}->{j} and defined $hits{$id}->{v} );
+    # warn "$id\t$hits{$id}->{j}\t$hits{$id}->{v}\n";
+    $V_ann{$hits{$id}->{v}}->{Js}->{$hits{$id}->{j}}++;
+  }
+
+  foreach my $v (keys %V_ann){
+    foreach my $j (keys %J_ann){
+      # print "$j\n";
+      unless (defined $V_ann{$v}->{Js}->{$j}){
+	$V_ann{$v}->{Js}->{$j} = 0;
+      }
+    }
+  }
+  warn "Finished generating J-V frequency matrix ...\n";
+  sleep(1);
+}
+
+sub print_results{
+  warn "Printing J-V matrix ...\n\n";
+  print REPORT "Printing J-V matrix ...\n\n";
+  sleep (1);
+
+  # print "\t";
+  print MATRIX  "\t";
+
+  foreach my $j (sort keys %J_ann){
+    #  print "J$j\t";
+    print MATRIX "J$j\t";
+  }
+  # print "\n";
+  print MATRIX "\n";
+
+  foreach my $v(sort {$V_ann{$a}->{count} <=> $V_ann{$b}->{count} } keys %V_ann){
+    #  print "$v:\t";
+    print MATRIX "$v:\t";
+
+    foreach my $j(sort keys %{$V_ann{$v}->{Js}} ){
+      #  print "$V_ann{$v}->{Js}->{$j}\t";
+      print MATRIX "$V_ann{$v}->{Js}->{$j}\t";
+    }
+
+    print MATRIX "\n";
+    #print "\n";
+    #  sleep(1);
+  }
+}
+
+
+
+sub determine_J_overlap{
+  my $j_alignments = shift;
+  warn "\nStoring read IDs for reads mapping to J regions (using file '$j_alignments')...\n";
+  print REPORT "\nStoring read IDs for reads mapping to J regions (using file '$j_alignments')...\n";
+  sleep (1);
+
+  if ($j_alignments =~ /\.bam$/){
+    open (JAY,"samtools view $j_alignments |") or die $!;
+  }
+  else{
+    open (JAY,$j_alignments) or die $!;
+  }
+
+  while (<JAY>){
+    next if ($_ =~ /^\@/); #skipping SAM header lines
+
+    my ($id,$chr,$start,$cigar,$seq) = (split (/\t/))[0,2,3,5,9];
+
+    next unless ($chr eq 14); # the IgH locus is in chromosome 14; also gets rid of unmapped reads
+
+    # parsing CIGAR string
+    my @len = split (/\D+/,$cigar); # storing the length per operation
+    my @ops = split (/\d+/,$cigar); # storing the operation
+    shift @ops; # remove the empty first element
+    die "CIGAR string contained a non-matching number of lengths and operations\n" unless (scalar @len == scalar @ops);
+
+    ### determining end position of a read
+    my $end = $start-1; ## this value needs to be adjusted just once
+
+    # warn "CIGAR string: $cigar\n";
+    foreach my $index(0..$#len){
+
+      if ($ops[$index] eq 'M'){  # standard matching bases
+	$end += $len[$index];
+	# warn "Operation is 'M', adding $len[$index] bp\n";
+      }
+      elsif($ops[$index] eq 'I'){ # insertions do not affect the end position
+	# warn "Operation is 'I', next\n";
+      }
+      elsif($ops[$index] eq 'D'){ # deletions do affect the end position
+	# warn "Operation is 'D',adding $len[$index] bp\n";
+	$end += $len[$index];
+      }
+      elsif($ops[$index] eq 'N'){ # skipped regions (= splice junctions) do affect the end position
+	# warn "Operation is 'D', adding $len[$index] bp\n";
+	$end += $len[$index];
+      }	
+      else{
+	die "Found CIGAR operations other than M, I, D or N: '$ops[$index]'. Not allowed at the moment\n";
+      }
+    }
+    #    print join ("\t",$id,$chr,$start,$end,$cigar),"\n";
+
+    ### Determining overlap of alignment with J-region
+    foreach my $j (keys %J_ann){
+      # print "$j\t$J_ann{$j}->{chr}\t$J_ann{$j}->{start}\t$J_ann{$j}->{end}\t\n";
+
+      # see if the J alignment overlaps +- 30bp
+      if ( ($start >= ($J_ann{$j}->{start}- 30) and $start < ($J_ann{$j}->{end} + 30) ) or ($end >= ($J_ann{$j}->{start}) and $end < ($J_ann{$j}->{end} + 30) ) ){
+	#	warn "Read overlaps with J-region $j:\n$start\t$end\n$J_ann{$j}->{start}\t$J_ann{$j}->{end}\n\n";
+	$hits{$id}->{j} = $j;
+	$hits{$id}->{j_start} = $start; # this might be different for different experimental setups, e.g. in the 150bp file this will always be read 2 so the reads will
+	$hits{$id}->{j_end} = $end;     # always be in reverse orientation, however for the single-end RNA version they will always be forward
+     	$hits{$id}->{j_sequence} = $seq;
+	last; # exiting the loop if we found a hit
+      }
+    }
+  }
+  warn "Number of sequences overlapping a J-region stored: ",scalar keys %hits," \n\n";
+  print REPORT "Number of sequences that overlapping a J-region stored: ",scalar keys %hits," \n\n";
+}
+
+
+sub determine_V_overlap{
+  my $v_alignments = shift;
+  warn "Now determining whether reads overlapped V-regions in addition to J-regions ('using file $v_alignments')...\n";
+  print REPORT "Now determining whether reads overlapped V-regions in addition to J-regions ('using file $v_alignments')...\n";
+
+  if ($v_alignments =~ /\.bam$/){
+    open (VEE,"samtools view -h $v_alignments |") or die $!;
+  }
+  else{
+    open (VEE,$v_alignments) or die $!;
+  }
+
+  my $count = 0;
+
+  while (<VEE>){
+    next if ($_ =~ /^\@/); #skipping SAM header lines
+
+    my ($id,$chr,$start,$cigar,$seq) = (split (/\t/))[0,2,3,5,9];
+
+    next unless ($chr eq 14) or ($chr eq 'chr14'); # the IgH locus is in chromosome 14; also gets rid of unmapped reads
+    next unless (exists $hits{$id}); # this sequence needs to have an entry for a J region for it to be potentially interesting
+
+    # parsing CIGAR string
+    my @len = split (/\D+/,$cigar); # storing the length per operation
+    my @ops = split (/\d+/,$cigar); # storing the operation
+    shift @ops; # remove the empty first element
+    die "CIGAR string contained a non-matching number of lengths and operations\n" unless (scalar @len == scalar @ops);
+
+    ### determining end position of a read
+    my $end = $start-1; ## this value needs to be adjusted just once
+
+    # warn "CIGAR string: $cigar\n";
+    foreach my $index(0..$#len){
+
+      if ($ops[$index] eq 'M'){  # standard matching bases
+	$end += $len[$index];
+	# warn "Operation is 'M', adding $len[$index] bp\n";
+      }
+      elsif($ops[$index] eq 'I'){ # insertions do not affect the end position
+	# warn "Operation is 'I', next\n";
+      }
+      elsif($ops[$index] eq 'D'){ # deletions do affect the end position
+	# warn "Operation is 'D',adding $len[$index] bp\n";
+	$end += $len[$index];
+      }
+      elsif($ops[$index] eq 'N'){ # skipped regions (= splice junctions) do affect the end position
+	# warn "Operation is 'D', adding $len[$index] bp\n";
+	$end += $len[$index];
+      }	
+      else{
+	die "Found CIGAR operations other than M, I, D or N: '$ops[$index]'. Not allowed at the moment\n";
+      }
+    }
+
+    #    print join ("\t",$id,$chr,$start,$end,$cigar),"\n";
+    #    sleep(1);
+
+    ### Determining overlap of alignment with V-region for this we can take the V region +- 500bp as the locus is huge. Not that huge actually...
+    foreach my $v (keys %V_ann){
+      #  print "$v\t$V_ann{$v}->{chr}\t$V_ann{$v}->{start}\t$V_ann{$v}->{end}\t\n";
+
+      # see if the alignment overlaps a V-region +- 500 bp
+      if ( ($start >= ($V_ann{$v}->{start} - 500) and $start < ($V_ann{$v}->{end} + 500) ) or ($end >= ($V_ann{$v}->{start}) and $end < ($V_ann{$v}->{end} + 500) ) ){
+	# warn "Read overlaps with V-region $v:\n$start\t$end\n$V_ann{$v}->{start}\t$V_ann{$v}->{end}\n\n";
+	$hits{$id}->{v} = $v;	
+	$hits{$id}->{v_start} = $start;
+	$hits{$id}->{v_end} = $end;
+	$hits{$id}->{v_sequence} = $seq;
+	++$count;
+	last; # exiting the loop if we found a hit
+      }
+    }
+  }
+  my $percentage = sprintf("%.1f",100 * $count/scalar keys %hits);
+
+  warn "Number of sequences overlapping a V-region in addition to a J-region stored: $count ($percentage%)\n\n";
+  print REPORT "Number of sequences overlapping a V-region in addition to a J-region stored: $count ($percentage%)\n\n";
+}
+
+
+sub read_annotations{
+  my $annotation_file = shift;
+  open (ANN,$annotation_file) or die $!;
+  $_ = <ANN>; # header line
+  my $count = 0;
+  while(<ANN>){
+    my ($chr,$start,$end,$gene) = (split(/\t/))[0,1,2,4];
+    #  print join (",",$chr,$start,$end,$gene),"\n";
+    #  sleep(1);
+    if ($gene =~ /^IGHJ/){
+      $gene =~ s/^IGHJ//;
+      $J_ann{$gene}->{start} = $start;
+      $J_ann{$gene}->{end} = $end;
+      $J_ann{$gene}->{chr} = $chr;
+    }
+    elsif ($gene =~ /^IGHV/){
+      $gene =~ s/^IGHV//;
+      ++$count;
+      $V_ann{$gene}->{start} = $start;
+      $V_ann{$gene}->{end} = $end;
+      $V_ann{$gene}->{chr} = $chr;
+      $V_ann{$gene}->{count} = $count;
+    }
+    elsif ($gene =~ /^IGHD/){
+      $gene =~ s/^IGHD//;
+      $D_ann{$gene}->{start} = $start;
+      $D_ann{$gene}->{end} = $end;
+      $D_ann{$gene}->{chr} = $chr;
+    }
+    else{
+      # warn "skipping gene $gene\n";
+    }
+  }
+  warn "Number of J annotations stored: ",scalar keys %J_ann,"\n";
+  warn "Number of V annotations stored: ",scalar keys %V_ann,"\n";
+  warn "Number of D annotations stored: ",scalar keys %D_ann,"\n";
+
+  print REPORT "Number of J annotations stored: ",scalar keys %J_ann,"\n";
+  print REPORT "Number of V annotations stored: ",scalar keys %V_ann,"\n";
+  print REPORT "Number of D annotations stored: ",scalar keys %D_ann,"\n";
+  print REPORT "Finished storing human IgH gene annotations\n";
+  warn "Finished storing human IgH gene annotations\n";
+  close ANN or die $!;
+}
+
+
