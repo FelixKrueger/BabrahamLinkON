@@ -119,5 +119,24 @@ to deduplicate V-alignments. The J-read sequences in the `*bait_side.txt` files 
     
 > TAGACTG:CGTCCACGGGAATGTGTAAA (7N Barcode : 20bp J downstream sequence)
 
-The output of the deduplication procedure is written to a new BAM file ending in `.unique_V.bam`.
+The output of the deduplication procedure is written to a new BAM file ending in `.unique_V.bam`. The dedplication step also generates a `.V-report.txt` file containing some general details about the deduplication. It also prints out the first 100 most frequent 7N barcode: J-read downstream sequences for your information. Here are a few example lines:
+
+```
+VkJk_test_V-region_val_1.Jk4.V_report.txt
+::::::::::::::
+Number of V alignments stored: 1944
+
+Processed 2296 sequences from file VkJk_test_V-region_val_1.Jk4.bait_side.txt in total
+Unique V-alignments written out: 1928 (83.97%)
+J sequences got removed (likely PCR duplicates: 16)
+
+Top 100 most frequent sequences downstream of the J-segment with V-ends starting at different positions:
+CAAACGG:CGTGAATCACAGTGATTCAT    7
+GAAACGG:CGTGAATCACAGTGATTCAT    5
+CAAACTG:CGTGAATCACAGTGATTCAT    5
+GAATCGG:CGTGAATCACAGTGATTCAT    4
+AAATCCG:CGTGAATCACAGTGATTCAT    4
+CCATGTC:CGTGAATCACAGTGATTCAT    4
+CCATTGG:CGTGAATCACAGTGATTCAT    3
+```
 
