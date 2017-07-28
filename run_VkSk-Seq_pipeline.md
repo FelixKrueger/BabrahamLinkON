@@ -60,7 +60,7 @@ TTTCCAGCTTGGTGCCTCCA    ATTTCCAGCTTGGTGCCTCCA   38
 ```
 
 
-### Step 3: Running BabrahamLinkON_VkJK
+### Step 3: Running BabrahamLinkON_VkJk
 
 Once the mispriming correction has been applied we are ready to run the J-bait detection with this command:
 
@@ -118,5 +118,6 @@ This script:
 to deduplicate V-alignments. The J-read sequences in the `*bait_side.txt` files look like this:
     
 > TAGACTG:CGTCCACGGGAATGTGTAAA (7N Barcode : 20bp J downstream sequence)
-    
+
+The output of the deduplication procedure is written to a new BAM file ending in `.unique_V.bam`.
 
