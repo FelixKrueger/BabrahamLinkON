@@ -102,4 +102,21 @@ bowtie -t -p 6 --chunkmbs 2048 -S --strata -m 1 --best NCBIM37/Mus_musculus.NCBI
 
 ### Step 5: Deduplicating the output results
 
+This script is simply run by typing:
+
+```
+./deduplicate_VkJk-Seq
+```
+
+in the folder containing all the results. It automatically picks up files called `*bam` and `*bait_side.txt`, so the above steps 1-4 need to have been run for every single Jk bait file in the folder.
+
+This script:
+* stores all starting positions of V-side alignments
+* uses 20 bp downstream of the J-region bait fragment
+* uses the 7bp barcode sequence (see Step 3 for more details)
+    
+to deduplicate V-alignments. The J-read sequences in the `*bait_side.txt` files look like this:
+    
+> TAGACTG:CGTCCACGGGAATGTGTAAA (7N Barcode : 20bp J downstream sequence)
+    
 
